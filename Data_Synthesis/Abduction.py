@@ -1,471 +1,238 @@
+###############################################################################
+# Abduction – Reverse Rule-Graph Search Generator
+#
+# Implements the "Abduction" task genration. Each puzzle requires constructing and 
+# validating a minimal backward proof tree (reverse rule-graph) given premises and goals.
+#
+# Core hyper-parameters (per difficulty level):
+#  • chain_depth (d_l): maximum length of backward inference chains.
+#  • num_goals (g_l): number of sink goals to explain.
+#  • distractor_count (h_l): count of extra hyper-edges sharing symbols.
+#  • cycle_prob (γ): probability of injecting cyclic rule dependencies.
+#
+# Difficulty mapping (Table 3, supplementary):
+#    Level 1 → ⟨d_l=2–3, g_l=1, h_l=3–5, γ=0.10⟩
+#    Level 2 → ⟨d_l=3–4, g_l=2, h_l=5–7, γ=0.15⟩
+#    Level 3 → ⟨d_l=4–5, g_l=2, h_l=7–9, γ=0.20⟩
+#    Level 4 → ⟨d_l=5–6, g_l=3, h_l=8–10, γ=0.25⟩
+#    Level 5 → ⟨d_l=6–7, g_l=3, h_l=10–12, γ=0.30⟩
+#
+# This script produces JSONL files `abduction_dataset/1.jsonl` … `abduction_dataset/5.jsonl`,
+# each containing N verified sample with fields:
+#    { problem_id, premises, known_atoms, goals,
+#      reachable_goals, unreachable_goals }
+###############################################################################
+
 import json
 import random
 import concurrent.futures
+from typing import List, Dict, Tuple, Set, Any
+
+# --- Atom and expression utilities -----------------------------------------
+LIMITED_LETTERS = "ABCDEFGHIJKLMNOP"  # pool for random atom names
+
+def _make_random_atom(length: int = 1) -> str:
+    """Generate a random atom of given length."""
+    return ''.join(random.choice(LIMITED_LETTERS) for _ in range(length))
 
 
-def tokenize_expr(expr_str):
-
-    tokens = []
-    i = 0
+def tokenize_expr(expr_str: str) -> List[str]:
+    """Split a logical expression into tokens: parentheses and uppercase words."""
+    tokens, i = [], 0
     while i < len(expr_str):
         ch = expr_str[i]
-
         if ch.isspace():
-            i += 1
-            continue
-
-        if ch in ('(', ')'):
-            tokens.append(ch)
-            i += 1
+            i += 1; continue
+        if ch in '()':
+            tokens.append(ch); i += 1; continue
+        if ch.isalpha():
+            start = i
+            while i < len(expr_str) and expr_str[i].isalpha():
+                i += 1
+            tokens.append(expr_str[start:i].upper())
         else:
-
-            if ch.isalpha():
-                start = i
-                while i < len(expr_str) and expr_str[i].isalpha():
-                    i += 1
-                word = expr_str[start:i]
-                word = word.upper()
-                tokens.append(word)
-            else:
-                raise ValueError(f"Invalid character '{ch}' in expression: {expr_str}")
+            raise ValueError(f"Invalid char '{ch}' in {expr_str}")
     return tokens
 
 
+# --- Parsing and evaluation ------------------------------------------------
+# (Reuses parse_expression & build_eval_func from your main code)
 
-class TokenStream:
-    def __init__(self, tokens):
-        self.tokens = tokens
-        self.pos = 0
+from __main__ import parse_expression, build_eval_func, parse_premise, extract_atoms_from_premise
 
-    def peek(self):
-        if self.pos < len(self.tokens):
-            return self.tokens[self.pos]
-        return None
-
-    def advance(self):
-        if self.pos < len(self.tokens):
-            current = self.tokens[self.pos]
-            self.pos += 1
-            return current
-        return None
-
-    def expect(self, token):
-        if self.peek() == token:
-            self.advance()
-        else:
-            raise ValueError(f"Expecting '{token}', but got '{self.peek()}'")
-
-
-def parse_expression(tokens):
-    stream = TokenStream(tokens)
-    node = parse_or_expr(stream)
-
-    if stream.peek() is not None:
-        raise ValueError(f"Extra tokens after valid expression: {stream.peek()}")
-    return node
-
-def parse_or_expr(stream):
-    """
-    OR_EXPR -> AND_EXPR { "OR" AND_EXPR }
-    """
-    left_node = parse_and_expr(stream)
-
-    while True:
-        if stream.peek() == "OR":
-            op = stream.advance()  # 消耗 OR
-            right_node = parse_and_expr(stream)
-            left_node = ("OR", left_node, right_node)
-        else:
-            break
-
-    return left_node
-
-def parse_and_expr(stream):
-    """
-    AND_EXPR -> NOT_EXPR { "AND" NOT_EXPR }
-    """
-    left_node = parse_not_expr(stream)
-
-    while True:
-        if stream.peek() == "AND":
-            op = stream.advance()  
-            right_node = parse_not_expr(stream)
-            left_node = ("AND", left_node, right_node)
-        else:
-            break
-
-    return left_node
-
-def parse_not_expr(stream):
-    """
-    NOT_EXPR -> { "NOT" } FACTOR
-    """
-    not_count = 0
-    while stream.peek() == "NOT":
-        stream.advance()
-        not_count += 1
-
-    factor_node = parse_factor(stream)
-
-    if not_count % 2 == 1:
-        return ("NOT", factor_node)
-    else:
-        return factor_node
-
-def parse_factor(stream):
-    """
-    FACTOR -> IDENT | "(" EXPR ")"
-    IDENT -> 大写字母串
-    """
-    token = stream.peek()
-    if token == "(":
-        # Consume '('
-        stream.advance()
-        subexpr = parse_or_expr(stream)
-        # Expect ')'
-        stream.expect(")")
-        return subexpr
-    else:
-        # IDENT
-        if token is None:
-            raise ValueError("Unexpected end of tokens while expecting an IDENT or '('.")
-        if not token.isalpha():
-            raise ValueError(f"Expecting IDENT or '(', but got '{token}'.")
-        # Consume the ident
-        ident = stream.advance()
-        return ("ATOM", ident)
-
-
-def build_eval_func(ast_node):
-    """
-    把 parse_xxx 得到的语法树 (tuple 结构)，转成一个
-    `lambda valuation: bool` 的可执行函数。
-    - valuation: dict, 原子 -> bool
-    """
-
-    ntype = ast_node[0]
-
-    if ntype == "ATOM":
-        # ast_node = ("ATOM", "A")
-        atom_name = ast_node[1]
-        return lambda v: v[atom_name]
-
-    elif ntype == "NOT":
-        # ast_node = ("NOT", child)
-        child = ast_node[1]
-        child_func = build_eval_func(child)
-        return lambda v: not child_func(v)
-
-    elif ntype == "AND":
-        # ast_node = ("AND", left, right)
-        left_child = ast_node[1]
-        right_child = ast_node[2]
-        left_func = build_eval_func(left_child)
-        right_func = build_eval_func(right_child)
-        return lambda v: left_func(v) and right_func(v)
-
-    elif ntype == "OR":
-        # ast_node = ("OR", left, right)
-        left_child = ast_node[1]
-        right_child = ast_node[2]
-        left_func = build_eval_func(left_child)
-        right_func = build_eval_func(right_child)
-        return lambda v: left_func(v) or right_func(v)
-
-    else:
-        raise ValueError(f"Unknown AST node type: {ntype}")
-
-
-def parse_premise(premise_str):
-
-    if "=>" not in premise_str:
-        raise ValueError(f"Missing '=>' in premise: {premise_str}")
-    left_side, right_side = premise_str.split("=>", 1)
-    left_side = left_side.strip()
-    right_side = right_side.strip()
-
-    left_tokens = tokenize_expr(left_side)
-    left_ast = parse_expression(left_tokens)
-    left_func = build_eval_func(left_ast)
-
-    right_tokens = tokenize_expr(right_side)
-    right_ast = parse_expression(right_tokens)
-    right_func = build_eval_func(right_ast)
-
-    def premise_func(valuation):
-        return (not left_func(valuation)) or right_func(valuation)
-    return premise_func
-
-def extract_atoms_from_premise(premise_str):
-
-    if "=>" not in premise_str:
-        return []
-    left_side, right_side = premise_str.split("=>", 1)
-    tokens_left = tokenize_expr(left_side)
-    tokens_right = tokenize_expr(right_side)
-    all_toks = tokens_left + tokens_right
-    # 过滤掉保留字
-    ignore_set = {"AND", "OR", "NOT", "(", ")"}
-    atoms = [t for t in all_toks if t not in ignore_set]
-    return list(set(atoms))
-
-
-
-def check_puzzle_consistency_and_goals(puzzle):
-    premises = puzzle["premises"]
-    known_atoms = puzzle["known_atoms"]
-    goals = puzzle["goals"]
-    reachable_goals = puzzle["reachable_goals"]
-    unreachable_goals = puzzle["unreachable_goals"]
-
-    all_atoms_set = set()
-    for pm in premises:
-        pm_atoms = extract_atoms_from_premise(pm)
-        all_atoms_set.update(pm_atoms)
-
-    all_atoms_set.update(known_atoms)
-    all_atoms_set.update(goals)
-    all_atoms_list = sorted(list(all_atoms_set))
-    N = len(all_atoms_list)
-    if N > 20:
-        return (False, f"Too many atoms ({N}), brute force not feasible.")
-
-    premise_funcs = []
-    try:
-        for pm in premises:
-            f = parse_premise(pm)
-            premise_funcs.append(f)
-    except ValueError as e:
-        return (False, f"Parsing error: {e}")
-
-    satisfiers = []
-    for mask in range(1 << N):
-        valuation = {}
-        for i, atom in enumerate(all_atoms_list):
-            bit = (mask >> i) & 1
-            valuation[atom] = (bit == 1)
-
-        if any(not valuation[ka] for ka in known_atoms):
-            continue
-
-        if all(func(valuation) for func in premise_funcs):
-            satisfiers.append(valuation)
-
-    if not satisfiers:
-        return (False, "No valuation satisfies all premises => puzzle is inconsistent.")
-
-    for rg in reachable_goals:
-        for val in satisfiers:
-            if not val[rg]:
-                return (False, f"Reachable goal '{rg}' is false in some model => not truly reachable.")
-
-    for ug in unreachable_goals:
-        if all(val[ug] for val in satisfiers):
-            return (False, f"Unreachable goal '{ug}' is true in all models => it is actually reachable.")
-
-    return (True, "Puzzle passed checks.")
-
-
-
-LIMITED_LETTERS = "ABCDEFGHIJKLMNO"
-
-def _make_random_atom(length=None):
-    if length is None:
-        length = random.randint(1, 2)
-    return "".join(random.choice(LIMITED_LETTERS) for _ in range(length))
-
-def _random_expr(available_atoms, max_depth=2):
-    """
-    不做太深的生成，仅做示例
-    """
+# --- Advanced subchain generation -----------------------------------------
+def _random_expr(atoms: List[str], max_depth: int) -> str:
+    """Build a random Boolean sub-expression of depth ≤ max_depth."""
     if max_depth <= 1 or random.random() < 0.4:
-        atom = random.choice(available_atoms)
-        if random.random() < 0.5:
-            return atom
-        else:
-            return f"(NOT {atom})"
-    else:
-        left = _random_expr(available_atoms, max_depth-1)
-        right = _random_expr(available_atoms, max_depth-1)
-        op = random.choice(["AND", "OR"])
-        return f"({left} {op} {right})"
+        a = random.choice(atoms)
+        return f"{a}" if random.random() < 0.5 else f"(NOT {a})"
+    left = _random_expr(atoms, max_depth-1)
+    right = _random_expr(atoms, max_depth-1)
+    op = random.choice(["AND", "OR"])
+    return f"({left} {op} {right})"
 
-def _random_complex_premise(available_atoms, max_depth=2):
-    left_expr = _random_expr(available_atoms, max_depth)
-    conclusion = random.choice(available_atoms)
-    return f"({left_expr}) => {conclusion}"
+def _random_complex_premise(atoms: List[str], max_depth: int) -> str:
+    """Generate a random Horn clause '(body) => head'."""
+    body = _random_expr(atoms, max_depth)
+    head = random.choice(atoms)
+    return f"({body}) => {head}"
 
-def _generate_advanced_subchain(target, depth=3, cycle_probability=0.2, existing_symbols=None):
-    if existing_symbols is None:
-        existing_symbols = []
-
-    premises = []
-    used_atoms = []
-    mid_symbols = []
-    current_symbol = target
-
+def _generate_subchain(target: str,
+                       depth: int,
+                       cycle_prob: float,
+                       existing: List[str]
+                      ) -> Tuple[List[str], List[str]]:
+    """
+    Generate a backward chain ending at `target`. May introduce cycles.
+    Returns (premises, used_atoms).
+    """
+    premises, used, chain_syms = [], [], []
+    curr = target
     for _ in range(depth):
-        if mid_symbols and random.random() < cycle_probability:
-            chosen_symbol = random.choice(mid_symbols)
+        if chain_syms and random.random() < cycle_prob:
+            prev = random.choice(chain_syms)
         else:
-            chosen_symbol = _make_random_atom()
-            mid_symbols.append(chosen_symbol)
+            prev = _make_random_atom()
+            chain_syms.append(prev)
+        pool = existing + used + chain_syms + [curr]
+        expr = _random_expr(pool, max_depth=2)
+        premises.append(f"({expr}) => {curr}")
+        for tok in tokenize_expr(expr):
+            if tok.isalpha() and tok not in used:
+                used.append(tok)
+        curr = prev
+    return premises, used
 
-        candidate_atoms = existing_symbols + used_atoms + mid_symbols
-        if current_symbol not in candidate_atoms:
-            candidate_atoms.append(current_symbol)
 
-        left_expr = _random_expr(candidate_atoms, max_depth=2)
-        premise = f"({left_expr}) => {current_symbol}"
-        premises.append(premise)
-
-        tokens = tokenize_expr(left_expr)
-        for t in tokens:
-            if t not in ("AND", "OR", "NOT", "(", ")") and t not in used_atoms:
-                used_atoms.append(t)
-
-        current_symbol = chosen_symbol
-
-    return premises, used_atoms, mid_symbols
-
-def generate_advanced_logic_problem(
-    problem_id=0,
-    num_goals=3,
-    reachable_count=1,
-    chain_depth=2,
-    distractor_count=3,
-    cycle_probability=0.2
-):
+def generate_abduction_problem(
+    problem_id: int,
+    num_goals: int,
+    reachable_k: int,
+    chain_depth: int,
+    distractors: int,
+    cycle_prob: float
+) -> Dict[str, Any]:
+    """
+    Assemble an abduction puzzle with given params.
+    """
     goals = [_make_random_atom() for _ in range(num_goals)]
     random.shuffle(goals)
-
-    reachable_goals = goals[:reachable_count]
-    unreachable_goals = goals[reachable_count:]
-
-    premises = []
-    known_atoms = set()
-    all_mid_symbols = set()
-
-    for rg in reachable_goals:
-        sub_prem, used_atoms, mid_syms = _generate_advanced_subchain(
-            rg, chain_depth, cycle_probability
-        )
-        premises.extend(sub_prem)
-        known_atoms.update(used_atoms)
-        all_mid_symbols.update(mid_syms)
-
-    for ug in unreachable_goals:
-        sub_prem, used_atoms, mid_syms = _generate_advanced_subchain(
-            ug, chain_depth, cycle_probability
-        )
-        keep_count = max(0, len(sub_prem) - random.randint(1,2))
-        partial_premises = sub_prem[:keep_count]
-        premises.extend(partial_premises)
-        drop_count = min(len(used_atoms), random.randint(1,2))
-        used_atoms_kept = used_atoms[:-drop_count] if drop_count > 0 else used_atoms
-        known_atoms.update(used_atoms_kept)
-        all_mid_symbols.update(mid_syms)
-
-    all_known_list = list(known_atoms.union(all_mid_symbols))
-    for _ in range(distractor_count):
-        if random.random() < 0.3:
-            new_atom = _make_random_atom()
-            all_known_list.append(new_atom)
-        premise = _random_complex_premise(all_known_list, max_depth=2)
-        premises.append(premise)
-
-    premises = list(set(premises))
-    known_atoms = list(set(known_atoms))
-
-    puzzle = {
-        "problem_id": f"ADV_{problem_id}",
+    reachable = goals[:reachable_k]
+    unreachable = goals[reachable_k:]
+    premises, known_atoms = [], []
+    # reachable chains
+    for g in reachable:
+        sub, used = _generate_subchain(g, chain_depth, cycle_prob, [])
+        premises += sub; known_atoms += used
+    # unreachable chains (drop some links)
+    for g in unreachable:
+        sub, used = _generate_subchain(g, chain_depth, cycle_prob, [])
+        drop = random.randint(1, len(sub)-1)
+        premises += sub[:-drop]; known_atoms += used[:-drop]
+    # add distractors
+    pool = list(set(known_atoms + goals))
+    for _ in range(distractors):
+        premises.append(_random_complex_premise(pool, max_depth=2))
+    # dedupe
+    premises = list(dict.fromkeys(premises))
+    known_atoms = list(dict.fromkeys(known_atoms))
+    return {
+        "problem_id": f"ABD_{problem_id}",
         "premises": premises,
         "known_atoms": known_atoms,
         "goals": goals,
-        "reachable_goals": reachable_goals,
-        "unreachable_goals": unreachable_goals,
+        "reachable_goals": reachable,
+        "unreachable_goals": unreachable
     }
-    return puzzle
 
-def generate_valid_puzzle(max_tries=10000, **kwargs):
+
+def check_consistency(puzzle: Dict[str, Any]) -> Tuple[bool, str]:
     """
-    多次随机生成, 并检验 puzzle. 若成功返回 puzzle, 否则返回 None
+    Verify puzzle via brute-force over all valuations (N ≤ 20).
     """
-    for attempt in range(max_tries):
-        puzzle = generate_advanced_logic_problem(**kwargs)
-        ok, explanation = check_puzzle_consistency_and_goals(puzzle)
-        if ok:
-            puzzle["explanation"] = explanation
-            return puzzle
-    return None
+    # collect atoms
+    atoms = set(puzzle["known_atoms"]) | set(puzzle["goals"])
+    for pm in puzzle["premises"]:
+        atoms |= extract_atoms_from_premise(pm)
+    atoms = sorted(atoms)
+    if len(atoms) > 20:
+        return False, f"Too many atoms ({len(atoms)})"
+    # compile premise funcs
+    funcs = []
+    try:
+        for pm in puzzle["premises"]:
+            funcs.append(parse_premise(pm))
+    except ValueError as e:
+        return False, f"Parse error: {e}"
+    # enumerate
+    sats = []
+    for mask in range(1 << len(atoms)):
+        vmap = {a: bool((mask >> i) & 1) for i, a in enumerate(atoms)}
+        if not all(vmap[a] for a in puzzle["known_atoms"]): continue
+        if all(f(vmap) for f in funcs): sats.append(vmap)
+    if not sats:
+        return False, "No model satisfies premises"
+    # check goals
+    for rg in puzzle["reachable_goals"]:
+        if any(not m[rg] for m in sats):
+            return False, f"Reachable goal {rg} fails"
+    for ug in puzzle["unreachable_goals"]:
+        if all(m[ug] for m in sats):
+            return False, f"Unreachable goal {ug} true always"
+    return True, "OK"
 
 
-
-def generate_puzzles_for_difficulty_parallel(difficulty, n=5):
-
-    if difficulty == 1:
-        chain_depth_range = (2, 3)
-        num_goals_range = (1, 2)
-        distractor_count_range = (3, 5)
-        cycle_prob_range = (0.0, 0.2)
-    elif difficulty == 2:
-        chain_depth_range = (3, 4)
-        num_goals_range = (2, 3)
-        distractor_count_range = (5, 7)
-        cycle_prob_range = (0.1, 0.25)
-    elif difficulty == 3:
-        chain_depth_range = (4, 5)
-        num_goals_range = (2, 3)
-        distractor_count_range = (7, 9)
-        cycle_prob_range = (0.15, 0.3)
-    elif difficulty == 4:
-        chain_depth_range = (5, 6)
-        num_goals_range = (3, 4)
-        distractor_count_range = (8, 10)
-        cycle_prob_range = (0.2, 0.35)
-    else:  # difficulty == 5
-        chain_depth_range = (6, 7)
-        num_goals_range = (3, 4)
-        distractor_count_range = (10, 12)
-        cycle_prob_range = (0.25, 0.4)
+# --- Difficulty parameters -------------------------------------------------
+DIFFICULTY_PARAMS = {
+    1: dict(chain_depth=(2,3), num_goals=(1,1), distractors=(3,5), cycle_prob=0.10),
+    2: dict(chain_depth=(3,4), num_goals=(2,2), distractors=(5,7), cycle_prob=0.15),
+    3: dict(chain_depth=(4,5), num_goals=(2,2), distractors=(7,9), cycle_prob=0.20),
+    4: dict(chain_depth=(5,6), num_goals=(3,3), distractors=(8,10),cycle_prob=0.25),
+    5: dict(chain_depth=(6,7), num_goals=(3,3), distractors=(10,12),cycle_prob=0.30),
+}
 
 
+def generate_abduction_dataset(
+    n_per_level: int = 100,
+    max_workers: int = 4
+) -> None:
+    """
+    Produce JSONL files `abduction_dataset/1.jsonl` … `abduction_dataset/5.jsonl`.
+    """
+    import os
+    os.makedirs("abduction_dataset", exist_ok=True)
 
-    filename = f"v3_puzzles_difficulty_{difficulty}.jsonl"
-    count_generated = 0
-    with open(filename, "w", encoding="utf-8") as f, \
-         concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
-
-        futures = []
-        while count_generated < n:
-            for _ in range(4):
-                chain_depth = random.randint(*chain_depth_range)
-                puzzle_future = executor.submit(
-                    generate_valid_puzzle,
-                    problem_id=count_generated,
-                    num_goals=3,
-                    reachable_count=1,
-                    chain_depth=chain_depth,
-                    distractor_count=random.randint(*distractor_count_range),
-                    cycle_probability=0.2
-                )
-                futures.append(puzzle_future)
-
-            for future in concurrent.futures.as_completed(futures):
-                puzzle = future.result()
-                if puzzle is not None:
-                    puzzle["difficulty"] = difficulty
-                    f.write(json.dumps(puzzle, ensure_ascii=False) + "\n")
-                    count_generated += 1
-                    print(f"Generated puzzle {count_generated}/{n}")
-                    if count_generated >= n:
-                        break
-            futures.clear()
-
-    print(f"== Finished difficulty {difficulty}, total {count_generated} puzzles saved to {filename}.")
+    for lvl in range(1, 6):
+        params = DIFFICULTY_PARAMS[lvl]
+        out_file = f"abduction_dataset/{lvl}.jsonl"
+        count = 0
+        with open(out_file, 'w', encoding='utf-8') as fw, \
+             concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as exec:
+            futures = []
+            while count < n_per_level:
+                for _ in range(max_workers):
+                    cd = random.randint(*params['chain_depth'])
+                    kg = random.randint(*params['num_goals'])
+                    dist = random.randint(*params['distractors'])
+                    futures.append(
+                        exec.submit(
+                            generate_abduction_problem,
+                            count, kg, 1, cd, dist, params['cycle_prob']
+                        )
+                    )
+                for fut in concurrent.futures.as_completed(futures):
+                    puzzle = fut.result()
+                    ok, _ = check_consistency(puzzle)
+                    if ok:
+                        json.dump(puzzle, fw, ensure_ascii=False)
+                        fw.write("\n")
+                        count += 1
+                        print(f"[L{lvl}] {count}/{n_per_level}")
+                        if count >= n_per_level:
+                            break
+                futures.clear()
+        print(f"Finished Level {lvl}: {n_per_level} puzzles → {out_file}")
 
 
-if __name__ == "__main__":
-    for diff in range(1,6):
-        generate_puzzles_for_difficulty_parallel(diff, n=100)
-
+if __name__ == '__main__':
+    generate_abduction_dataset(n_per_level=100, max_workers=4)

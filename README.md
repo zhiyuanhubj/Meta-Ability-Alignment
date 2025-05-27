@@ -18,9 +18,6 @@
 <blockquote align="center"><strong>Beyond “Aha!” — Toward Systematic Meta-Abilities Alignment in Large Reasoning Models</strong><br><em>Zhiyuan Hu et al., 2025</em></blockquote>
 
 
-> **Beyond “Aha!” — Toward Systematic Meta-Abilities Alignment in Large Reasoning Models**  
-> *Zhiyuan Hu et al.*, 2025
-
 ---
 
 ## 1 Overview
@@ -32,10 +29,11 @@ This repository provides **code, data generators, training scripts, and checkpoi
 2. **Stage B – Parameter-Space Merging**  
    Merge the three specialist models into a single checkpoint at zero extra cost.
 3. **Stage C – Domain-Specific RL**  
-   Continue training from the merged model on downstream domains (Math, Code, Science) to push the ceiling higher.
+   Continue training from the merged model on downstream domains (such as Math) to push the ceiling higher.
 
 All generators are **program-verifiable**; no human annotation is needed.  
-Scripts reproduce the paper’s main results on 7 B (single A100 × 8) and 32 B (multi-node) scales.
+
+[Overall Framework](images/framework.jpg)
 
 ---
 

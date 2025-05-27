@@ -10,7 +10,7 @@
 
 ---
 
-## 0 Overview
+## 1 Overview
 
 This repository provides **code, data generators, training scripts, and checkpoints** for the three-stage pipeline described in the paper:
 
@@ -26,19 +26,18 @@ Scripts reproduce the paper’s main results on 7 B (single A100 × 8) and 32 B 
 
 ---
 
-## 1 News 📰
+## 2 News 📰
 
 | Date (YYYY-MM-DD) | Update |
 |-------------------|--------|
-| 2025-05-27 | 🚀 Code & 7 B / 32 B checkpoints released |
-| 2025-05-22 | Paper v1 uploaded to arXiv (ID 2505.10554) |
-| 2025-05-15 | 🥇 Merged model set new SOTA on AIME-2024 benchmark |
+| 2025-05-27 | 🚀 Code & 7 B checkpoints released, 32B model checkpoints will come soon |
+| 2025-05-15 | Paper v1 uploaded to arXiv |
 
 Feel free to open Issues or start a Discussion to share your results! 🎉
 
 ---
 
-## 2 Get Started 🌟
+## 3 Get Started 🌟
 
 ### 2.1 Environment
 
@@ -55,41 +54,41 @@ pip install -e ./mergekit            # if not pulled automatically
 ### 2.2 Data Generation
 
 ```bash
-# Deduction – Nested SAT
-python scripts/generate/nested_puzzle_sampler.py
+# Deduction –  Propositional Satisfiability
+python Data_Synthesis/Deduction.py
 
-# Induction – Sequence Extrapolation
-python scripts/generate/sequence_puzzle_generator.py
+# Induction – Masked-Sequence Completion
+python Induction/Induction.py
 
 # Abduction – Reverse Rule-Graph Search
-python scripts/generate/abduction_generator.py
+python Data_Synthesis/Abduction.py
 ```
 
-Data are written to data/{deduction,induction,abduction}/level_{1,2,…} by default.
+Data are written to Data_Synthesis/{Deduction,Induction,Abduction}\_dataset/{1,2,…}.jsonl by default.
 
 ### 2.3 Train Specialist Models (Stage A)
 
 ```bash
 # Example: Deduction-7B
-bash scripts/train/train_deduction_7b.sh
-# Likewise: train_induction_7b.sh / train_abduction_7b.sh
+bash Training/scripts/train_deduction_7b.sh
 ```
 
-Each script contains VERL + REINFORCE++ objectives, curriculum schedules, and reward settings.
+Each script contains VERL + REINFORCE++ objectives, curriculum schedules, and reward settings. We modified the `_select_rm_score_fn` function in `main_ppo.py` and `mix.py`, as well as in `Deduction.py`, `Induction.py`, and `Abduction.py` (under `utils/reward_score`), based on the original VeRL and Logic-RL implementations.
+
 
 ### 2.4 Model Merging (Stage B)
 
+Follow the instructions to set up the environment using the code from `https://github.com/arcee-ai/mergekit`, and then use the provided utilities to execute the merge.
+
+
 ```bash
-python -m mergekit.cli.merge configs/merge_meta.yaml \
-      --output hf_models/7b-Domain-RL-Meta
-# Likewise: train_induction_7b.sh / train_abduction_7b.sh
+mergekit-yaml merge/merge_meta.yml ./merge-Deduction-Induction-Abduction --cuda
 ```
 merge_meta.yaml uses the paper’s best weights
 
 ### 2.5 Continue Training (Stage C)
 
-
-## 3 Results 📈
+## 4 Performans 📈
 
 ### Table 1  
 ![Table 1 – Main Results (7B and 32B Models)](images/table1.jpg)
@@ -99,20 +98,20 @@ merge_meta.yaml uses the paper’s best weights
 
 
 
-## 4 Contact 📬
+## 5 Contact 📬
 
 - **Zhiyuan Hu** – zhiyuan_hu@u.nus.edu  
 - Found a bug or performance gap? Please open an Issue or email us.  
 - Industry / research collaboration inquiries are welcome!
 
-## 5 Citation 📄
+## 6 Citation 📄
 
 If you use this project, please cite:
 
 ```bibtex
-@article{hu2025metaability,
-  title   = {Beyond “Aha!”: Toward Systematic Meta-Abilities Alignment in Large Reasoning Models},
-  author  = {Hu, Zhiyuan and Wang, Yibo and Dong, Hanze and Xu, Yuhui and Saha, Amrita and Xiong, Caiming and Hooi, Bryan and Li, Junnan},
-  journal = {arXiv preprint arXiv:2505.10554},
-  year    = {2025}
+@article{hu2025beyond,
+  title={Beyond'Aha!': Toward Systematic Meta-Abilities Alignment in Large Reasoning Models},
+  author={Hu, Zhiyuan and Wang, Yibo and Dong, Hanze and Xu, Yuhui and Saha, Amrita and Xiong, Caiming and Hooi, Bryan and Li, Junnan},
+  journal={arXiv preprint arXiv:2505.10554},
+  year={2025}
 }

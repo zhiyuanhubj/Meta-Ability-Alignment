@@ -33,7 +33,7 @@ This repository provides **code, data generators, training scripts, and checkpoi
 
 All generators are **program-verifiable**; no human annotation is needed.  
 
-[Overall Framework](images/framework.jpg)
+![Overall Framework](images/framework.jpg)
 
 ---
 

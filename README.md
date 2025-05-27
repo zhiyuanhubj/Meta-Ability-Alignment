@@ -20,7 +20,7 @@
 
 ---
 
-## 1 Overview
+## 1. Overview
 
 This repository provides **code, data generators, training scripts, and checkpoints** for the three-stage pipeline described in the paper:
 
@@ -37,7 +37,7 @@ All generators are **program-verifiable**; no human annotation is needed.
 
 ---
 
-## 2 News 📰
+## 2. News 📰
 
 | Date (YYYY-MM-DD) | Update |
 |-------------------|--------|
@@ -48,7 +48,7 @@ Feel free to open Issues or start a Discussion to share your results! 🎉
 
 ---
 
-## 3 Get Started 🌟
+## 3. Get Started 🌟
 
 ### 2.1 Environment
 
@@ -99,7 +99,7 @@ merge_meta.yaml uses the paper’s best weights
 
 ### 2.5 Continue Training (Stage C)
 
-## 4 Performans 📈
+## 4. Performans 📈
 
 ### Table 1  
 ![Table 1 – Main Results (7B and 32B Models)](images/table1.jpg)
@@ -109,13 +109,13 @@ merge_meta.yaml uses the paper’s best weights
 
 
 
-## 5 Contact 📬
+## 5. Contact 📬
 
 - **Zhiyuan Hu** – zhiyuan_hu@u.nus.edu  
 - Found a bug or performance gap? Please open an Issue or email us.  
 - Industry / research collaboration inquiries are welcome!
 
-## 6 Citation 📄
+## 6. Citation 📄
 
 If you use this project, please cite:
 

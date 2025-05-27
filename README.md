@@ -92,10 +92,10 @@ merge_meta.yaml uses the paper’s best weights
 ## 3 Results 📈
 
 ### Table 1  
-![Table 1 – Main Results (7B and 32B Models)](imags/table1.png)
+![Table 1 – Main Results (7B and 32B Models)](images/table1.jpg)
 
 ### Table 2  
-![Table 2 – Continual Domain specific RL Training](imags/table2.png)
+![Table 2 – Continual Domain specific RL Training](images/table2.jpg)
 
 
 

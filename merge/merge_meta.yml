@@ -1,0 +1,13 @@
+models:
+  - model: zhiyuanhucs/deduction-7b
+    parameters:
+      weight: 1
+  - model: zhiyuanhucs/induction-7b
+    parameters:
+      weight: 0.2
+  - model: zhiyuanhucs/abduction-7b
+    parameters:
+      weight: 0.1
+merge_method: linear
+dtype: float32
+
